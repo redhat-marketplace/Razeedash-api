@@ -1,18 +1,18 @@
 /**
-* Copyright 2019 IBM Corp. All Rights Reserved.
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*      http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*/
+ * Copyright 2019 IBM Corp. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 const crypto = require('crypto');
 const { v4: uuid } = require('uuid');
@@ -32,32 +32,45 @@ const verifyAdminOrgKey = require('../../utils/orgs.js').verifyAdminOrgKey;
 const getBunyanConfig = require('../../utils/bunyan.js').getBunyanConfig;
 const getCluster = require('../../utils/cluster.js').getCluster;
 const deleteResource = require('../../utils/resources.js').deleteResource;
-const buildSearchableDataForResource = require('../../utils/cluster.js').buildSearchableDataForResource;
+const buildSearchableDataForResource = require('../../utils/cluster.js')
+  .buildSearchableDataForResource;
 const buildSearchableDataObjHash = require('../../utils/cluster.js').buildSearchableDataObjHash;
 const buildPushObj = require('../../utils/cluster.js').buildPushObj;
 const buildHashForResource = require('../../utils/cluster.js').buildHashForResource;
 const resourceChangedFunc = require('../../apollo/subscription/index.js').resourceChangedFunc;
 
-
 const addUpdateCluster = async (req, res, next) => {
   try {
     const Clusters = req.db.collection('clusters');
     const Stats = req.db.collection('resourceStats');
-    const cluster = await Clusters.findOne({ org_id: req.org._id, cluster_id: req.params.cluster_id});
+    const cluster = await Clusters.findOne({
+      org_id: req.org._id,
+      cluster_id: req.params.cluster_id
+    });
     const metadata = req.body;
     if (!cluster) {
-      await Clusters.insertOne({ org_id: req.org._id, cluster_id: req.params.cluster_id, metadata, created: new Date(), updated: new Date() });
+      await Clusters.insertOne({
+        org_id: req.org._id,
+        cluster_id: req.params.cluster_id,
+        metadata,
+        created: new Date(),
+        updated: new Date()
+      });
       runAddClusterWebhook(req, req.org._id, req.params.cluster_id, metadata.name); // dont await. just put it in the bg
       Stats.updateOne({ org_id: req.org._id }, { $inc: { clusterCount: 1 } }, { upsert: true });
       res.status(200).send('Welcome to Razee');
-    }
-    else {
+    } else {
       if (cluster.dirty) {
-        await Clusters.updateOne({ org_id: req.org._id, cluster_id: req.params.cluster_id }, { $set: { metadata, updated: new Date(), dirty: false } });
+        await Clusters.updateOne(
+          { org_id: req.org._id, cluster_id: req.params.cluster_id },
+          { $set: { metadata, updated: new Date(), dirty: false } }
+        );
         res.status(205).send('Please resync');
-      }
-      else {
-        await Clusters.updateOne({ org_id: req.org._id, cluster_id: req.params.cluster_id }, { $set: { metadata, updated: new Date() } });
+      } else {
+        await Clusters.updateOne(
+          { org_id: req.org._id, cluster_id: req.params.cluster_id },
+          { $set: { metadata, updated: new Date() } }
+        );
         res.status(200).send('Thanks for the update');
       }
     }
@@ -65,54 +78,53 @@ const addUpdateCluster = async (req, res, next) => {
     req.log.error(err.message);
     next(err);
   }
-
 };
 
-var getAddClusterWebhookHeaders = async()=>{
+var getAddClusterWebhookHeaders = async () => {
   // loads the headers specified in the 'razeedash-add-cluster-webhook-headers-secret' secret
   // returns the key-value pairs of the secret as a js obj
   var filesDir = '/var/run/secrets/razeeio/razeedash-api/add-cluster-webhook-headers';
   var fileNames = await glob('**', {
     cwd: filesDir,
-    nodir: true,
+    nodir: true
   });
   var headers = {};
-  _.each(fileNames, (name)=>{
+  _.each(fileNames, name => {
     var val = fs.readFileSync(`${filesDir}/${name}`, 'utf8');
     headers[encodeURIComponent(name)] = val;
   });
   return headers;
 };
 
-var runAddClusterWebhook = async(req, orgId, clusterId, clusterName)=>{
+var runAddClusterWebhook = async (req, orgId, clusterId, clusterName) => {
   var postData = {
     org_id: orgId,
     cluster_id: clusterId,
-    cluster_name: clusterName,
+    cluster_name: clusterName
   };
   var url = process.env.ADD_CLUSTER_WEBHOOK_URL;
-  if(!url){
+  if (!url) {
     return;
   }
   req.log.info({ url, postData }, 'posting add cluster webhook');
-  try{
+  try {
     var headers = await getAddClusterWebhookHeaders();
     var result = await request.post({
       url,
       body: postData,
       json: true,
       resolveWithFullResponse: true,
-      headers,
+      headers
     });
     req.log.info({ url, postData, statusCode: result.statusCode }, 'posted add cluster webhook');
-  }catch(err){
+  } catch (err) {
     req.log.error({ url, postData, err }, 'add cluster webhook failed');
   }
 };
 
 const pushToS3 = async (req, key, dataStr) => {
   //if its a new or changed resource, write the data out to an S3 object
-  const orgId = key.org_id.toLowerCase(); 
+  const orgId = key.org_id.toLowerCase();
   const bucket = `razee-${orgId}`;
   const hash = crypto.createHash('sha256');
   const hashKey = hash.update(JSON.stringify(key)).digest('hex');
@@ -120,47 +132,63 @@ const pushToS3 = async (req, key, dataStr) => {
   return `https://${req.s3.endpoint}/${bucket}/${hashKey}`;
 };
 
-var deleteOrgClusterResourceSelfLinks = async(req, orgId, clusterId, selfLinks)=>{
+var deleteOrgClusterResourceSelfLinks = async (req, orgId, clusterId, selfLinks) => {
   const Resources = req.db.collection('resources');
   selfLinks = _.filter(selfLinks); // in such a case that a null is passed to us. if you do $in:[null], it returns all items missing the attr, which is not what we want
-  if(selfLinks.length < 1){
+  if (selfLinks.length < 1) {
     return;
   }
-  if(!orgId || !clusterId){
+  if (!orgId || !clusterId) {
     throw `missing orgId or clusterId: ${JSON.stringify({ orgId, clusterId })}`;
   }
   var search = {
     org_id: orgId,
     cluster_id: clusterId,
     selfLink: {
-      $in: selfLinks,
+      $in: selfLinks
     }
   };
   await Resources.deleteMany(search);
 };
 
-const syncClusterResources = async(req, res)=>{
+const syncClusterResources = async (req, res) => {
   const orgId = req.org._id;
   const clusterId = req.params.cluster_id;
   const Resources = req.db.collection('resources');
   const Stats = req.db.collection('resourceStats');
 
   var result = await Resources.updateMany(
-    { org_id: orgId, cluster_id: clusterId, updated: { $lt: new moment().subtract(1, 'hour').toDate() }, deleted: { $ne: true} },
-    { $set: { deleted: true }, $currentDate: { updated: true } },
+    {
+      org_id: orgId,
+      cluster_id: clusterId,
+      updated: { $lt: new moment().subtract(1, 'hour').toDate() },
+      deleted: { $ne: true }
+    },
+    { $set: { deleted: true }, $currentDate: { updated: true } }
   );
-  req.log.debug({ org_id: orgId, cluster_id: clusterId }, `${result.modifiedCount} resources marked as deleted:true`);
+  req.log.debug(
+    { org_id: orgId, cluster_id: clusterId },
+    `${result.modifiedCount} resources marked as deleted:true`
+  );
 
   // deletes items >1day old
   var objsToDelete = await Resources.find(
-    { org_id: orgId, cluster_id: clusterId, deleted: true, updated: { $lt: new moment().subtract(1, 'day').toDate() } },
-    { projection: { selfLink: 1, updated: 1, } }
+    {
+      org_id: orgId,
+      cluster_id: clusterId,
+      deleted: true,
+      updated: { $lt: new moment().subtract(1, 'day').toDate() }
+    },
+    { projection: { selfLink: 1, updated: 1 } }
   ).toArray();
 
-  if(objsToDelete.length > 0){
+  if (objsToDelete.length > 0) {
     // if we have items that were marked as deleted and havent updated in >=1day, then deletes them
     var selfLinksToDelete = _.map(objsToDelete, 'selfLink');
-    req.log.info({ org_id: orgId, cluster_id: clusterId, resourceObjs: objsToDelete }, `deleting ${selfLinksToDelete.length} resource objs`);
+    req.log.info(
+      { org_id: orgId, cluster_id: clusterId, resourceObjs: objsToDelete },
+      `deleting ${selfLinksToDelete.length} resource objs`
+    );
     await deleteOrgClusterResourceSelfLinks(req, orgId, clusterId, selfLinksToDelete);
 
     Stats.updateOne({ org_id: orgId }, { $inc: { deploymentCount: -1 * objsToDelete.length } });
@@ -194,7 +222,16 @@ const updateClusterResources = async (req, res, next) => {
         case 'ADDED': {
           const resourceHash = buildHashForResource(resource.object, req.org);
           let dataStr = JSON.stringify(resource.object);
-          const selfLink = resource.object.metadata.selfLink;
+          let selfLink;
+          if (
+            resource.object.metadata &&
+            resource.object.metadata.annotations &&
+            resource.object.metadata.annotations.selfLink
+          ) {
+            selfLink = resource.object.metadata.annotations.selfLink;
+          } else {
+            selfLink = resource.object.metadata.selfLink;
+          }
           const key = {
             org_id: req.org._id,
             cluster_id: req.params.cluster_id,
@@ -203,47 +240,65 @@ const updateClusterResources = async (req, res, next) => {
           const currentResource = await Resources.findOne(key);
           const searchableDataObj = buildSearchableDataForResource(req.org, resource.object);
           const searchableDataHash = buildSearchableDataObjHash(searchableDataObj);
-          const hasSearchableDataChanges = (currentResource && searchableDataHash != _.get(currentResource, 'searchableDataHash'));
-          const pushCmd = buildPushObj(searchableDataObj, _.get(currentResource, 'searchableData', null));
+          const hasSearchableDataChanges =
+            currentResource && searchableDataHash != _.get(currentResource, 'searchableDataHash');
+          const pushCmd = buildPushObj(
+            searchableDataObj,
+            _.get(currentResource, 'searchableData', null)
+          );
           if (req.s3 && (!currentResource || resourceHash !== currentResource.hash)) {
             dataStr = await pushToS3(req, key, dataStr);
           }
           var changes = null;
           var options = {};
-          if(currentResource){
+          if (currentResource) {
             // if obj already in db
-            if (resourceHash === currentResource.hash && !hasSearchableDataChanges){
+            if (resourceHash === currentResource.hash && !hasSearchableDataChanges) {
               // if obj in db and nothing has changed
               changes = {
                 $set: { deleted: false },
                 $currentDate: { updated: true }
               };
-            }
-            else{
+            } else {
               // if obj in db and theres changes to save
               changes = {
-                $set: { deleted: false, hash: resourceHash, data: dataStr, searchableData: searchableDataObj, searchableDataHash: searchableDataHash, },
+                $set: {
+                  deleted: false,
+                  hash: resourceHash,
+                  data: dataStr,
+                  searchableData: searchableDataObj,
+                  searchableDataHash: searchableDataHash
+                },
                 $currentDate: { updated: true },
                 ...pushCmd
               };
             }
-          }
-          else{
+          } else {
             // if obj not in db, then adds it
             changes = {
-              $set: { deleted: false, hash: resourceHash, data: dataStr, searchableData: searchableDataObj, searchableDataHash: searchableDataHash },
+              $set: {
+                deleted: false,
+                hash: resourceHash,
+                data: dataStr,
+                searchableData: searchableDataObj,
+                searchableDataHash: searchableDataHash
+              },
               $currentDate: { created: true, updated: true },
               ...pushCmd
             };
             options = { upsert: true };
-            Stats.updateOne({ org_id: req.org._id }, { $inc: { deploymentCount: 1 } }, { upsert: true });
+            Stats.updateOne(
+              { org_id: req.org._id },
+              { $inc: { deploymentCount: 1 } },
+              { upsert: true }
+            );
           }
 
           const result = await Resources.updateOne(key, changes, options);
           // publish notification to graphql
           if (process.env.ENABLE_GRAPHQL === 'true' && result) {
             let resourceId = null;
-            let resourceCreated = Date.now; 
+            let resourceCreated = Date.now;
             if (result.upsertedId) {
               resourceId = result.upsertedId._id;
             } else if (currentResource) {
@@ -251,14 +306,22 @@ const updateClusterResources = async (req, res, next) => {
               resourceCreated = currentResource.created;
             }
             if (resourceId) {
-              resourceChangedFunc(
-                {_id: resourceId, data: dataStr, created: resourceCreated,
-                  deleted: false, org_id: req.org._id, cluster_id: req.params.cluster_id, selfLink: selfLink, 
-                  hash: resourceHash, searchableData: searchableDataObj, searchableDataHash: searchableDataHash});
+              resourceChangedFunc({
+                _id: resourceId,
+                data: dataStr,
+                created: resourceCreated,
+                deleted: false,
+                org_id: req.org._id,
+                cluster_id: req.params.cluster_id,
+                selfLink: selfLink,
+                hash: resourceHash,
+                searchableData: searchableDataObj,
+                searchableDataHash: searchableDataHash
+              });
             }
           }
 
-          if(hasSearchableDataChanges){
+          if (hasSearchableDataChanges) {
             // if any of the searchable attrs has changes, then save a new yaml history obj (for diffing in the ui)
             await addResourceYamlHistObj(req, req.org._id, clusterId, selfLink, dataStr);
           }
@@ -275,21 +338,36 @@ const updateClusterResources = async (req, res, next) => {
           const searchableDataObj = buildSearchableDataForResource(req.org, resource.object);
           const searchableDataHash = buildSearchableDataObjHash(searchableDataObj);
           const currentResource = await Resources.findOne(key);
-          const pushCmd = buildPushObj(searchableDataObj, _.get(currentResource, 'searchableData', null));
+          const pushCmd = buildPushObj(
+            searchableDataObj,
+            _.get(currentResource, 'searchableData', null)
+          );
           if (req.s3) {
             dataStr = await pushToS3(req, key, dataStr);
           }
           if (currentResource) {
-            await Resources.updateOne(
-              key, {
-                $set: { deleted: true, data: dataStr, searchableData: searchableDataObj, searchableDataHash: searchableDataHash },
-                $currentDate: { updated: true },
-                ...pushCmd
-              }
-            );
+            await Resources.updateOne(key, {
+              $set: {
+                deleted: true,
+                data: dataStr,
+                searchableData: searchableDataObj,
+                searchableDataHash: searchableDataHash
+              },
+              $currentDate: { updated: true },
+              ...pushCmd
+            });
             await addResourceYamlHistObj(req, req.org._id, clusterId, selfLink, '');
             if (process.env.ENABLE_GRAPHQL === 'true') {
-              resourceChangedFunc({ _id: currentResource._id, created: currentResource.created, deleted: true, org_id: req.org._id, cluster_id: req.params.cluster_id, selfLink: selfLink, searchableData: searchableDataObj, searchableDataHash: searchableDataHash});
+              resourceChangedFunc({
+                _id: currentResource._id,
+                created: currentResource.created,
+                deleted: true,
+                org_id: req.org._id,
+                cluster_id: req.params.cluster_id,
+                selfLink: selfLink,
+                searchableData: searchableDataObj,
+                searchableDataHash: searchableDataHash
+              });
             }
           }
           break;
@@ -306,7 +384,7 @@ const updateClusterResources = async (req, res, next) => {
   }
 };
 
-var addResourceYamlHistObj = async(req, orgId, clusterId, resourceSelfLink, yamlStr)=>{
+var addResourceYamlHistObj = async (req, orgId, clusterId, resourceSelfLink, yamlStr) => {
   var ResourceYamlHist = req.db.collection('resourceYamlHist');
   var id = uuid();
   var obj = {
@@ -315,7 +393,7 @@ var addResourceYamlHistObj = async(req, orgId, clusterId, resourceSelfLink, yaml
     cluster_id: clusterId,
     resourceSelfLink,
     yamlStr,
-    updated: new Date(),
+    updated: new Date()
   };
   await ResourceYamlHist.insertOne(obj);
   return id;
@@ -344,16 +422,16 @@ const addClusterMessages = async (req, res, next) => {
       org_id: req.org._id,
       level: level,
       data: errorData,
-      message_hash: messageHash,
+      message_hash: messageHash
     };
     data = {
       level: level,
       message: message,
       data: errorData,
-      updated: new Date(),
+      updated: new Date()
     };
     insertData = {
-      created: new Date(),
+      created: new Date()
     };
 
     const Messages = req.db.collection('messages');
@@ -370,8 +448,8 @@ const getClusters = async (req, res, next) => {
   try {
     const Clusters = req.db.collection('clusters');
     const orgId = req.org._id + '';
-    const clusters = await Clusters.find({ 'org_id': orgId }).toArray();
-    return res.status(200).send({clusters});
+    const clusters = await Clusters.find({ org_id: orgId }).toArray();
+    return res.status(200).send({ clusters });
   } catch (err) {
     req.log.error(err.message);
     next(err);
@@ -380,8 +458,8 @@ const getClusters = async (req, res, next) => {
 
 const clusterDetails = async (req, res) => {
   const cluster = req.cluster; // req.cluster was set in `getCluster`
-  if(cluster) {
-    return res.status(200).send({cluster});
+  if (cluster) {
+    return res.status(200).send({ cluster });
   } else {
     return res.status(404).send('cluster was not found');
   }
@@ -389,7 +467,7 @@ const clusterDetails = async (req, res) => {
 
 const deleteCluster = async (req, res, next) => {
   try {
-    if(!req.org._id || !req.params.cluster_id){
+    if (!req.org._id || !req.params.cluster_id) {
       throw 'missing orgId or clusterId';
     }
     const Clusters = req.db.collection('clusters');
@@ -399,7 +477,7 @@ const deleteCluster = async (req, res, next) => {
     next();
   } catch (error) {
     req.log.error(error.message);
-    return res.status(500).json({ status: 'error', message: error.message }); 
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
@@ -409,10 +487,18 @@ router.use(ebl(getBunyanConfig('razeedash-api/clusters')));
 router.post('/:cluster_id', mongoSanitize({ replaceWith: '_' }), asyncHandler(addUpdateCluster));
 
 // /api/v2/clusters/:cluster_id/resources
-router.post('/:cluster_id/resources', asyncHandler(getCluster), asyncHandler(updateClusterResources));
+router.post(
+  '/:cluster_id/resources',
+  asyncHandler(getCluster),
+  asyncHandler(updateClusterResources)
+);
 
 // /api/v2/clusters/:cluster_id/resources/sync
-router.post('/:cluster_id/resources/sync', asyncHandler(getCluster), asyncHandler(syncClusterResources));
+router.post(
+  '/:cluster_id/resources/sync',
+  asyncHandler(getCluster),
+  asyncHandler(syncClusterResources)
+);
 
 // /api/v2/clusters/:cluster_id/messages
 router.post('/:cluster_id/messages', asyncHandler(getCluster), asyncHandler(addClusterMessages));
@@ -421,9 +507,20 @@ router.post('/:cluster_id/messages', asyncHandler(getCluster), asyncHandler(addC
 router.get('/', asyncHandler(verifyAdminOrgKey), asyncHandler(getClusters));
 
 // /api/v2/clusters/:cluster_id
-router.get('/:cluster_id', asyncHandler(verifyAdminOrgKey), asyncHandler(getCluster), asyncHandler(clusterDetails));
+router.get(
+  '/:cluster_id',
+  asyncHandler(verifyAdminOrgKey),
+  asyncHandler(getCluster),
+  asyncHandler(clusterDetails)
+);
 
 // /api/v2/clusters/:cluster_id
-router.delete('/:cluster_id', asyncHandler(verifyAdminOrgKey), asyncHandler(getCluster), asyncHandler(deleteCluster), asyncHandler(deleteResource));
+router.delete(
+  '/:cluster_id',
+  asyncHandler(verifyAdminOrgKey),
+  asyncHandler(getCluster),
+  asyncHandler(deleteCluster),
+  asyncHandler(deleteResource)
+);
 
 module.exports = router;
