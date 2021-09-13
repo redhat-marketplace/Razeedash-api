@@ -328,7 +328,17 @@ const updateClusterResources = async (req, res, next) => {
           break;
         }
         case 'DELETED': {
-          const selfLink = resource.object.metadata.selfLink;
+          let selfLink;
+          if (
+            resource.object.metadata &&
+            resource.object.metadata.annotations &&
+            resource.object.metadata.annotations.selfLink
+          ) {
+            selfLink = resource.object.metadata.annotations.selfLink;
+          } else {
+            selfLink = resource.object.metadata.selfLink;
+          }
+
           let dataStr = JSON.stringify(resource.object);
           const key = {
             org_id: req.org._id,
