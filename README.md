@@ -139,8 +139,8 @@ metadata:
   namespace: razee
 type: Opaque
 data:
-  mongo_url: bW9uZ29kYjovL21vbmdvOjI3MDE3L3JhemVlZGFzaAo=
-  org_admin_key: YWJjZGVmZ2hpamtsbW5vcDAxMjM0NTY3OA==
+  mongo_url: <KEY_WILL_GO_HERE>
+  org_admin_key: <KEY_WILL_GO_HERE>
 ```
 
 If you are using your own managed mongodb system, make sure you
