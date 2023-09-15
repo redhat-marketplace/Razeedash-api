@@ -23,7 +23,7 @@ USER root
 WORKDIR /home/app
 
 COPY --chown=1001:0 . /home/app
-RUN npm install --production --loglevel=warn
+RUN npm ci --legacy-peer-deps --omit=dev --loglevel=warn
 
 
 #######################################
@@ -42,4 +42,5 @@ ENV BUILD_ID=${BUILD_ID}
 COPY --chown=1001:0 --from=buildImg /home/app /home/app
 
 EXPOSE 3333
+ENV NODE_OPTIONS="--dns-result-order=ipv4first"
 CMD ["npm", "start"]
