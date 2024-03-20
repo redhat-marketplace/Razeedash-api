@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-const { execute, subscribe } = require( 'graphql' );
+const { execute, subscribe, parse } = require( 'graphql' );
 const { SubscriptionServer } = require( 'subscriptions-transport-ws' );
 const { makeExecutableSchema } = require( '@graphql-tools/schema' );
 let subscriptionServer;
@@ -36,6 +36,7 @@ const { models, connectDb } = require('./models');
 const promClient = require('prom-client');
 const createMetricsPlugin = require('apollo-metrics');
 const apolloMetricsPlugin = createMetricsPlugin(promClient.register);
+const { customMetricsClient } = require('../customMetricsClient'); // Add custom metrics plugin
 const apolloMaintenancePlugin = require('./maintenance/maintenanceModePlugin.js');
 const { GraphqlPubSub } = require('./subscription');
 
@@ -72,10 +73,9 @@ const createDefaultApp = () => {
   return app;
 };
 
-const buildCommonApolloContext = async ({ models, req, res, connection }) => {
+const buildCommonApolloContext = async ({ models, req, res, connection, req_id }) => {
   if (connection) { // Operation is a Subscription
     const logger = connection.context.logger;
-    const req_id = connection.context.logger.fields.req_id;
     const req = connection.context.upgradeReq;
     const apiKey = connection.context.orgKey;
     const userToken = connection.context.userToken;
@@ -83,16 +83,16 @@ const buildCommonApolloContext = async ({ models, req, res, connection }) => {
     const context = await initModule.buildApolloContext({ models, req, res, connection, logger });
     return { apiKey, req, req_id, userToken, recoveryHintsMap, orgId, ...context };
   } else if (req) { // Operation is a Query/Mutation
-    const logger = req.log; // request context logger created by express-bunyan-logger
+    const logger = req.log;
     const context = await initModule.buildApolloContext({ models, req, res, connection, logger });
     if (context.me && context.me.orgKey) {
       const org = await models.Organization.findOne( { $or: [ { orgKeys: context.me.orgKey }, { 'orgKeys2.key': context.me.orgKey } ] } );
-      logger.fields.org_id = org._id;
+      req.log = req.log.child({org_id: org._id});
     }
     if (context.me && context.me.org_id) {
-      logger.fields.org_id = context.me.org_id;
+      req.log = req.log.child({org_id: context.me.org_id});
     }
-    return { req, req_id: logger.fields.req_id, recoveryHintsMap, ...context }; // req_id = req.id
+    return { req, req_id, recoveryHintsMap, ...context };
   }
 };
 
@@ -137,7 +137,45 @@ const createApolloServer = (schema) => {
     customPlugins.push(apolloMaintenancePlugin);
   }
 
+  customPlugins.push({
+    // Populate API metrics as they occur
+    requestDidStart(context) {
+      // Capture the start time when the request starts
+      const startTime = Date.now();
+
+      // Increment API counter metric
+      customMetricsClient.apiCallsCount.inc();
+
+      let encounteredError = false;
+      return {
+        didResolveOperation() {
+          // Parse API operation name
+          const match = context.request.query.match(/\{\s*(\w+)/);
+          const operationName = match ? match[1] : 'Query name not found';
+          // Record API operation duration metrics
+          const durationInSeconds = (Date.now() - startTime) / 1000;
+          customMetricsClient.apiCallHistogram(operationName).observe(durationInSeconds);
+        },
+        didEncounterErrors() {
+          encounteredError = true;
+        },
+        willSendResponse() {
+          // Parse API operation name
+          const match = context.request.query.match(/\{\s*(\w+)/);
+          const operationName = match ? match[1] : 'Query name not found';
+          // Record API operation success and failure gauge metrics
+          if (encounteredError) {
+            customMetricsClient.apiCallCounter(operationName).inc({ status: 'failure' });
+          } else {
+            customMetricsClient.apiCallCounter(operationName).inc({ status: 'success' });
+          }
+        }
+      };
+    },
+  });
+
   initLogger.info(customPlugins, 'Apollo server custom plugin are loaded.');
+
   const server = new ApolloServer({
     introspection: true, // set to true as long as user has valid token
     plugins: customPlugins,
@@ -160,7 +198,8 @@ const createApolloServer = (schema) => {
         models,
         req,
         res,
-        connection
+        connection,
+        req_id: uuid()
       });
     },
   });
@@ -199,7 +238,7 @@ const createSubscriptionServer = (httpServer, apolloServer, schema) => {
         }
         // add original upgrade request to the context
         const subscriptionContext = { me, upgradeReq: webSocket.upgradeReq, logger, orgKey, orgId };
-        return await buildCommonApolloContext( { models, req: context.request, res: { this_is_a_dummy_response: true }, connection: { context: subscriptionContext } } );
+        return await buildCommonApolloContext( { models, req: context.request, res: { this_is_a_dummy_response: true }, connection: { context: subscriptionContext }, req_id } );
       },
     },
     {
@@ -302,6 +341,38 @@ const apollo = async (options = {}) => {
     // This middleware should be added before calling `applyMiddleware`.
     app.use(graphqlUploadExpress());
     //Note: there does not yet appear to be an automated test for upload, it is unclear if this even functioning.
+
+    // Protect against batched queries of both forms described here: https://cheatsheetseries.owasp.org/cheatsheets/GraphQL_Cheat_Sheet.html#batching-attacks
+    const GQL_BATCH_LIMIT = process.env.GRAPHQL_BATCH_LIMIT || -1;
+    const countQueries = function( payload ) {
+      let count = 0;
+      if( Array.isArray(payload) ) {
+        for( const q of payload ) {
+          count += countQueries(q);
+        }
+      }
+      else {
+        try {
+          const parsedQuery = parse( payload.query );
+          for( let def of parsedQuery.definitions ) {
+            if( def.selectionSet && def.selectionSet.selections ) count += def.selectionSet.selections.length;
+          }
+        }
+        catch( e ) {
+          // invalid/unparsable GQL query, ignore (gql will handle faiure)
+        }
+      }
+      return( count );
+    };
+    app.use(GRAPHQL_PATH, (req,res,next)=>{
+      // Fail if limit defined and batch greater than limit
+      if( GQL_BATCH_LIMIT > 0 && countQueries( req.body ) > GQL_BATCH_LIMIT ) {
+        res.status(400).send( { errors: [ { message: 'Batched query limit exceeded' } ] } );
+      }
+      else {
+        next();
+      }
+    });
 
     server.applyMiddleware({
       app,
