@@ -8,7 +8,7 @@ on:
 
 env:
   IMAGE_REGISTRY: quay.io/rh-marketplace
-  VERSION: 2.0.3
+  VERSION: 2.0.9
 
 jobs:
 
